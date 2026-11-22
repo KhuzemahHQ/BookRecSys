@@ -1,0 +1,73 @@
+# =============================================================================
+# User Reading History & Personal Spreadsheets (NEVER commit personal data!)
+# =============================================================================
+Literature History*
+*sample*.xlsx
+*sample*.xls
+*sample*.csv
+~$*
+*.xlsx
+*.xls
+*.ods
+*.csv
+!examples/*.csv
+
+# =============================================================================
+# Local Catalogs, Downloaded Corpora, Vector Embeddings & Caches
+# =============================================================================
+data/
+!data/.gitkeep
+*.parquet
+*.feather
+*.arrow
+*.npy
+*.npz
+*.faiss
+*.hnsw
+*.index
+*.bin
+*.pt
+*.pth
+*.safetensors
+*.onnx
+*.db
+*.sqlite
+*.sqlite3
+*.jsonl
+.cache/
+huggingface_cache/
+
+# =============================================================================
+# Secrets & Environment Variables
+# =============================================================================
+.env
+.env.*
+!.env.example
+
+# =============================================================================
+# Python / uv / Packaging / Tooling
+# =============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# =============================================================================
+# OS & Editor Artifacts
+# =============================================================================
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
