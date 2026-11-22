@@ -114,7 +114,7 @@ class OnlineVerifier:
                         if cand_norm in all_norm_targets:
                             matched_item = it
                             break
-                        # Guard against fanfic subtitles ("Lord of the Mysteries: The New Black Emperor")
+                        # Guard against unofficial spin-off subtitles ("Original Title: Spin-off Story")
                         sim = fuzz.ratio(norm_target, cand_norm)
                         if sim >= 90.0 and abs(len(cand_norm) - len(norm_target)) <= 6:
                             matched_item = it

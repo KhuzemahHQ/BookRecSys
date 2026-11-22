@@ -149,7 +149,7 @@ def _detect_columns(headers: list[str], sample_rows: list[tuple]) -> dict[str, i
 
 
 def _is_summary_row(title: str, author: str, count_val: Optional[int]) -> bool:
-    """Filter out spreadsheet summary/total footer rows like 'Total Light Novel Experience:'."""
+    """Filter out spreadsheet summary/total footer rows like 'Total Summary:'."""
     t_low = title.lower()
     if not author and (
         t_low.startswith(("total ", "sum ", "average ", "avg ", "overall "))

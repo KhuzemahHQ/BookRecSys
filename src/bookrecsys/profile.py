@@ -82,7 +82,7 @@ def build_user_profile(
     Link user reading history entries to the local catalog and compute:
     1. Multi-interest positive embedding exemplars & anti-taste negative exemplars
     2. Signed genre & trope affinity weights
-    3. Author affinity weights (including author-only history rows like Roald Dahl x17)
+    3. Author affinity weights (including author-only series count rows)
     4. NovelUpdates human-curated collaborative recommendation graph boosts
     """
     profile = UserTasteProfile(entries=entries)

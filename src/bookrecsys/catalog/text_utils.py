@@ -66,7 +66,7 @@ def normalize_title(title: str) -> str:
 
 
 def normalize_series_stem(title: str) -> str:
-    """Extract normalized base series stem (e.g. 'Douluo Dalu 2.5' -> 'douluo dalu')."""
+    """Extract normalized base series stem (e.g. 'Chronicle Series 2' -> 'chronicle series')."""
     s = clean_text(title)
     s = _SERIES_SUFFIX_RE.sub("", s)
     if ":" in s:

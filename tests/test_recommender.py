@@ -227,7 +227,7 @@ def test_recommender_excludes_read_items_and_ranks_matching_constraints(tmp_path
     )
     engine2 = BookRecommender(index=idx2, cache=OnlineCache(db_path=cache_path))
     _, recs_ft = engine2.recommend(
-        "find me a xianxia light novel that has a transmigrated main character. The novel should be completed and fully translated. No yaoi or smut",
+        "completed and fully translated xianxia novel with a cautious protagonist, no harem",
         top_k=3,
         verify_online=False,
         allow_llm_parser=False,
