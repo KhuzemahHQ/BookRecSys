@@ -95,6 +95,18 @@ class BookRecommender:
         if "novelupdates.com" in parsed.required_metadata_domains:
             base_mask &= idx.has_nu
 
+        # Hard requirement on completion status whenever explicitly mentioned in the query
+        if parsed.completion_status == "completed":
+            if parsed.require_complete_translation:
+                base_mask &= idx.trans_completed
+            else:
+                base_mask &= idx.completed_true
+                # Exclude novels explicitly marked as having an incomplete translation
+                if int(np.sum(base_mask & ~idx.trans_incomplete)) >= max(top_k, 5):
+                    base_mask &= ~idx.trans_incomplete
+        elif parsed.completion_status == "ongoing":
+            base_mask &= idx.completed_false
+
         if parsed.original_language:
             lang_mask = np.array(
                 [lang == parsed.original_language for lang in idx.languages], dtype=bool
@@ -113,15 +125,8 @@ class BookRecommender:
             if np.sum(base_mask & ch_ok) >= 5:
                 base_mask &= ch_ok
 
-        # 2. Progressive constraint tiers so exact matches ALWAYS dominate while avoiding 0-result dead ends
+        # 2. Progressive genre/tag constraint tiers (while NEVER relaxing base_mask / completion_status!)
         strict_mask = base_mask.copy()
-        if parsed.completion_status == "completed":
-            if parsed.require_complete_translation and np.sum(strict_mask & idx.trans_completed) >= 5:
-                strict_mask &= idx.trans_completed
-            else:
-                strict_mask &= idx.completed_true
-        elif parsed.completion_status == "ongoing":
-            strict_mask &= idx.completed_false
 
         genre_strict = strict_mask.copy()
         for g in parsed.required_genres:
@@ -156,6 +161,10 @@ class BookRecommender:
             is_full = full_strict[candidate_indices].astype(np.float32)
             is_genre = genre_strict[candidate_indices].astype(np.float32)
             constraint_bonus = 0.65 * is_full + 0.35 * is_genre
+
+            # Prioritize entries explicitly marked completely translated when completed status is requested
+            if parsed.completion_status == "completed":
+                constraint_bonus += idx.trans_completed[candidate_indices].astype(np.float32) * 0.18
 
             # Soft genre/tag bonus
             soft_hits = np.zeros(n_cand, dtype=np.float32)
@@ -235,7 +244,10 @@ class BookRecommender:
 
         # Sort shortlist & apply series-stem deduplication + secondaryread guard
         order = np.argsort(-combined)
-        shortlist_limit = max(top_k * 5, 36) if (verify_online and parsed.preferred_reading_domains) else max(top_k * 2, 16)
+        if verify_online and parsed.preferred_reading_domains:
+            shortlist_limit = max(top_k * 12, 80) if parsed.completion_status else max(top_k * 6, 40)
+        else:
+            shortlist_limit = max(top_k * 2, 16)
 
         shortlisted: list[tuple[int, int, float]] = []  # (pos_in_cand, global_row_idx, base_score)
         seen_stems: set[str] = set()
@@ -264,8 +276,9 @@ class BookRecommender:
             cand_dicts = [idx.records[r_id] for _, r_id, _ in shortlisted]
             np_links = self.verifier.batch_verify_novelphoenix(
                 cand_dicts,
-                max_checks=min(len(cand_dicts), 36),
+                max_checks=len(cand_dicts),
                 target_hits=top_k + 2,
+                required_completion=parsed.completion_status,
             )
 
         results: list[RecommendationResult] = []
@@ -317,18 +330,9 @@ class BookRecommender:
                     if np_lnk:
                         links.append(np_lnk)
                         verified_on_preferred = True
-                        if parsed.completion_status == "completed":
-                            if np_lnk.is_completed_online is True:
-                                platform_bonus += 0.22
-                                is_comp = True
-                            elif np_lnk.is_completed_online is False:
-                                # Translation on reading platform is still ongoing despite completed raw
-                                platform_bonus -= 0.08
-                                is_comp = False
-                            else:
-                                platform_bonus += 0.12
-                        else:
-                            platform_bonus += 0.15
+                        if np_lnk.is_completed_online is not None:
+                            is_comp = np_lnk.is_completed_online
+                        platform_bonus += 0.18 if np_lnk.is_completed_online is True else 0.12
                         if np_lnk.extra_synopsis:
                             desc = np_lnk.extra_synopsis
                         if np_lnk.chapters_online:
@@ -343,7 +347,12 @@ class BookRecommender:
                             verified_on_preferred = True
                             platform_bonus += 0.12
 
-            # Enforce completion check if live platform showed ongoing when user asked for completed
+            # Hard enforcement of completion status (including live reading-platform status!)
+            if parsed.completion_status == "completed" and is_comp is not True:
+                continue
+            if parsed.completion_status == "ongoing" and is_comp is not False:
+                continue
+
             if (
                 strict_reading_platform
                 and verify_online
@@ -362,6 +371,9 @@ class BookRecommender:
             ):
                 opt_np = self.verifier.verify_novelphoenix(rec["title"], rec.get("aliases") or [], fetch_synopsis=True)
                 if opt_np:
+                    if opt_np.is_completed_online is not None and parsed.completion_status == "completed" and not opt_np.is_completed_online:
+                        # Skip if live verification reveals translation is still ongoing when completed was requested
+                        continue
                     if opt_np.extra_synopsis:
                         desc = opt_np.extra_synopsis
                     links.append(opt_np)
@@ -426,9 +438,16 @@ class BookRecommender:
                     if strict_reading_platform and not np_l:
                         continue
                     if np_l:
+                        if np_l.is_completed_online is not None:
+                            orec["is_completed"] = np_l.is_completed_online
                         olinks.append(np_l)
                         if not orec["description"] and np_l.extra_synopsis:
                             orec["description"] = np_l.extra_synopsis
+
+                if parsed.completion_status == "completed" and orec.get("is_completed") is not True:
+                    continue
+                if parsed.completion_status == "ongoing" and orec.get("is_completed") is not False:
+                    continue
 
                 results.append(
                     RecommendationResult(

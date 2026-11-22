@@ -211,6 +211,17 @@ def test_recommender_excludes_read_items_and_ranks_matching_constraints(tmp_path
     assert len(recs) >= 1
     titles = [r.title for r in recs]
     assert "Already Read Immortal" not in titles
+    assert "Ongoing Xianxia Story" not in titles
+    assert all(r.is_completed is True for r in recs)
     assert recs[0].title == "Steady Daoist Transmigrator"
-    assert recs[0].is_completed is True
     assert any("novelupdates.com" in lnk.url for lnk in recs[0].links)
+
+    # Even for a rare genre/trope where strict genre relaxation triggers, ongoing items must NEVER leak into completed queries
+    _, recs_rare = engine.recommend(
+        "find me a completed mecha xianxia web novel",
+        top_k=5,
+        verify_online=False,
+        allow_llm_parser=False,
+    )
+    assert all(r.is_completed is True for r in recs_rare)
+    assert "Ongoing Xianxia Story" not in [r.title for r in recs_rare]

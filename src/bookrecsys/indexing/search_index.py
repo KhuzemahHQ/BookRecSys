@@ -240,6 +240,9 @@ class HybridSearchIndex:
         self.trans_completed = np.array(
             [r.get("complete_translated") is True for r in self.records], dtype=bool
         )
+        self.trans_incomplete = np.array(
+            [r.get("complete_translated") is False for r in self.records], dtype=bool
+        )
         self.chapter_counts = np.array(
             [int(r.get("chapter_count") or -1) for r in self.records], dtype=np.int32
         )

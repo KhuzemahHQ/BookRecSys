@@ -310,58 +310,75 @@ class OnlineVerifier:
     def batch_verify_novelphoenix(
         self,
         candidates: list[dict[str, Any]],
-        max_checks: int = 30,
+        max_checks: int = 75,
         target_hits: int = 10,
+        required_completion: Optional[str] = None,
     ) -> dict[str, VerifiedLink]:
         """
         Verify NovelPhoenix readability across top shortlisted candidates with polite concurrency,
-        stopping early once enough verified matches (`target_hits`) are collected.
+        counting only status-matching links toward `target_hits` when `required_completion` is set.
         """
+        def _qualifies(lnk: VerifiedLink) -> bool:
+            if required_completion == "completed":
+                return lnk.is_completed_online is True
+            if required_completion == "ongoing":
+                return lnk.is_completed_online is False
+            return True
+
         results: dict[str, VerifiedLink] = {}
         subset = candidates[:max_checks]
 
         # Check cache synchronously first (0 ms, 0 network calls!)
         uncached: list[dict[str, Any]] = []
+        qualifying = 0
         for rec in subset:
             norm_t = normalize_title(rec["title"])
             cached = self.cache.get(f"np:v1:{norm_t}")
             if cached is not None:
                 if cached.get("found"):
-                    results[rec["book_id"]] = VerifiedLink(**cached["link"])
+                    lnk = VerifiedLink(**cached["link"])
+                    results[rec["book_id"]] = lnk
+                    if _qualifies(lnk):
+                        qualifying += 1
             else:
                 uncached.append(rec)
 
-        if len(results) >= target_hits or not uncached:
+        if qualifying >= target_hits or not uncached:
             return results
 
-        # Polite bounded ThreadPool (3 workers) for live lookups with tqdm progress bar
-        needed = max(target_hits - len(results) + 3, 6)
-        batch_slice = uncached[: min(len(uncached), needed * 3)]
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            fut_map = {
-                pool.submit(
-                    self.verify_novelphoenix,
-                    rec["title"],
-                    rec.get("aliases") or [],
-                    True,
-                ): rec["book_id"]
-                for rec in batch_slice
-            }
-            with tqdm(
-                total=len(fut_map),
-                desc="Verifying Live Availability on NovelPhoenix",
-                unit="novel",
-                dynamic_ncols=True,
-                file=sys.stderr,
-                leave=False,
-            ) as pbar:
-                for fut in as_completed(fut_map):
-                    bid = fut_map[fut]
-                    pbar.update(1)
-                    try:
-                        lnk = fut.result()
-                        if lnk is not None:
-                            results[bid] = lnk
-                    except Exception:
-                        pass
+        # Scan uncached candidates in polite waves of 18 (3 workers) until target_hits qualifying links are found
+        wave_size = 18
+        with tqdm(
+            total=len(uncached),
+            desc="Verifying Live Availability on NovelPhoenix",
+            unit="novel",
+            dynamic_ncols=True,
+            file=sys.stderr,
+            leave=False,
+        ) as pbar:
+            for start in range(0, len(uncached), wave_size):
+                if qualifying >= target_hits:
+                    break
+                wave = uncached[start : start + wave_size]
+                with ThreadPoolExecutor(max_workers=3) as pool:
+                    fut_map = {
+                        pool.submit(
+                            self.verify_novelphoenix,
+                            rec["title"],
+                            rec.get("aliases") or [],
+                            True,
+                        ): rec["book_id"]
+                        for rec in wave
+                    }
+                    for fut in as_completed(fut_map):
+                        bid = fut_map[fut]
+                        pbar.update(1)
+                        try:
+                            lnk = fut.result()
+                            if lnk is not None:
+                                results[bid] = lnk
+                                if _qualifies(lnk):
+                                    qualifying += 1
+                        except Exception:
+                            pass
         return results
