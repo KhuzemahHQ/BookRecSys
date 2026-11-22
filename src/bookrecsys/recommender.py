@@ -154,13 +154,20 @@ class BookRecommender:
         if len(candidate_indices) == 0:
             candidate_indices = np.flatnonzero(base_mask)
 
-        # 3. Compute exact constraint match bonus for every candidate in active_mask
+        # 3. Compute exact + partial genre/tag constraint match bonus for every candidate in active_mask
         n_cand = len(candidate_indices)
         constraint_bonus = np.zeros(n_cand, dtype=np.float32)
         if parsed.required_genres or parsed.required_tags or parsed.completion_status:
             is_full = full_strict[candidate_indices].astype(np.float32)
-            is_genre = genre_strict[candidate_indices].astype(np.float32)
-            constraint_bonus = 0.65 * is_full + 0.35 * is_genre
+            if parsed.required_genres:
+                g_frac = np.zeros(n_cand, dtype=np.float32)
+                for g in parsed.required_genres:
+                    g_m = (idx.genre_mask(g) | idx.tag_mask(g))[candidate_indices]
+                    g_frac += g_m.astype(np.float32)
+                g_frac /= float(len(parsed.required_genres))
+            else:
+                g_frac = genre_strict[candidate_indices].astype(np.float32)
+            constraint_bonus = 0.55 * is_full + 0.45 * g_frac
 
             # Prioritize entries explicitly marked completely translated when completed status is requested
             if parsed.completion_status == "completed":

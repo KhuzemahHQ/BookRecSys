@@ -42,11 +42,12 @@ def _render_parsed_query(parsed: ParsedQuery) -> None:
     if parsed.original_language:
         bits.append(f"[bold]Origin:[/bold] {parsed.original_language}")
     if parsed.required_genres:
-        bits.append(f"[bold]Genres:[/bold] {', '.join(parsed.required_genres)}")
+        bits.append(f"[bold green]Liked Genres:[/bold green] {', '.join(parsed.required_genres)}")
     if parsed.required_tags:
         bits.append(f"[bold]Tropes:[/bold] {', '.join(parsed.required_tags)}")
-    if parsed.excluded_tags:
-        bits.append(f"[bold red]Excluded:[/bold red] {', '.join(parsed.excluded_tags)}")
+    excluded_all = list(dict.fromkeys(parsed.excluded_genres + parsed.excluded_tags))
+    if excluded_all:
+        bits.append(f"[bold red]Excluded:[/bold red] {', '.join(excluded_all)}")
     if parsed.completion_status:
         bits.append(f"[bold]Status:[/bold] {parsed.completion_status}")
     if parsed.min_chapters or parsed.max_chapters:

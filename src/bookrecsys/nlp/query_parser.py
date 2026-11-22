@@ -36,6 +36,10 @@ GENRE_PATTERNS: list[tuple[re.Pattern[str], str, list[str]]] = [
     (re.compile(r"\bxuanhuan\b", re.I), "xuanhuan", ["xianxia", "fantasy"]),
     (re.compile(r"\bwuxia\b", re.I), "wuxia", ["martial arts", "xianxia"]),
     (re.compile(r"\bmartial\s+arts?\b", re.I), "martial arts", ["wuxia", "xianxia"]),
+    (re.compile(r"\baction\b", re.I), "action", ["adventure"]),
+    (re.compile(r"\badventure\b", re.I), "adventure", ["action"]),
+    (re.compile(r"\bdrama\b", re.I), "drama", []),
+    (re.compile(r"\bsupernatural\b", re.I), "supernatural", ["fantasy", "mystery"]),
     (re.compile(r"\bsci[\-\s]?fi\b|\bscience\s+fiction\b", re.I), "sci-fi", ["science fiction"]),
     (re.compile(r"\bfantasy\b", re.I), "fantasy", []),
     (re.compile(r"\bromance\b|\bromantic\b", re.I), "romance", []),
@@ -48,10 +52,18 @@ GENRE_PATTERNS: list[tuple[re.Pattern[str], str, list[str]]] = [
     (re.compile(r"\btragedy\b|\btragic\b", re.I), "tragedy", []),
     (re.compile(r"\bslice\s+of\s+life\b", re.I), "slice of life", []),
     (re.compile(r"\bmecha\b", re.I), "mecha", ["sci-fi"]),
+    (re.compile(r"\bmature\b", re.I), "mature", []),
+    (re.compile(r"\bseinen\b", re.I), "seinen", []),
+    (re.compile(r"\bshounen\b(?!\s+ai)", re.I), "shounen", []),
+    (re.compile(r"\bjosei\b", re.I), "josei", []),
+    (re.compile(r"\bshoujo\b(?!\s+ai)", re.I), "shoujo", []),
+    (re.compile(r"\bsports?\b", re.I), "sports", []),
+    (re.compile(r"\bnon[\-\s]?fiction\b", re.I), "nonfiction", []),
     (re.compile(r"\bsmut\b", re.I), "smut", []),
     (re.compile(r"\bharem\b", re.I), "harem", []),
-    (re.compile(r"\byaoi\b|\bdanmei\b|\boys['\s]*love\b", re.I), "yaoi", ["shounen ai"]),
-    (re.compile(r"\byuri\b|\bgirls['\s]*love\b", re.I), "yuri", ["shoujo ai"]),
+    (re.compile(r"\byaoi\b|\bdanmei\b|\bboys['\s]*love\b|\bshounen\s+ai\b", re.I), "yaoi", ["shounen ai"]),
+    (re.compile(r"\byuri\b|\bgirls['\s]*love\b|\bshoujo\s+ai\b", re.I), "yuri", ["shoujo ai"]),
+    (re.compile(r"\bgender[\-\s]?bender\b", re.I), "gender bender", []),
     (re.compile(r"\bphilosophy\b|\bphilosophical\b", re.I), "philosophy", ["nonfiction", "classics"]),
     (re.compile(r"\bclassic(?:s)?\b", re.I), "classics", ["fiction"]),
     (re.compile(r"\byoung\s+adult\b|\bya\b", re.I), "young adult", []),
@@ -112,7 +124,18 @@ _BARE_DOMAIN_RE = re.compile(
     re.I,
 )
 _NEGATION_CLAUSE_RE = re.compile(
-    r"\b(?:no|without|not\s+a|not|exclude|excluding|avoid|zero)\s+([a-z0-9\-\s]{3,35}?)(?=[,.;]|\band\b|\bor\b|\bwith\b|\bthat\b|$)",
+    r"\b("
+    r"(?:do\s+not|don't|dont|doesn't|does\s+not|would\s+not|wouldn't)\s+(?:like|want|enjoy|care\s+for|read)"
+    r"|(?:am\s+not|i'm\s+not|im\s+not|not)\s+(?:a\s+fan\s+of|into|interested\s+in|fond\s+of|looking\s+for)"
+    r"|dislik(?:e|ing)|hat(?:e|ing)|detest(?:ing)?|loath(?:e|ing)"
+    r"|stay\s+away\s+from|steer\s+clear\s+of|pass\s+on|skip(?:ping)?"
+    r"|anything\s+but|anything\s+except|except(?:\s+for)?"
+    r"|exclud(?:e|ing)|avoid(?:ing)?|without|no|zero|not\s+a|not"
+    r")\s+"
+    r"([^.!?;]+?)"
+    r"(?=[.!?;]|$|\b(?:but|however|though|although|instead|whereas|while)\b"
+    r"|\b(?:and\s+)?(?:i\s+)?(?:also\s+)?(?:like|love|want|prefer|enjoy|would\s+like|am\s+looking\s+for|looking\s+for)\b"
+    r"|\bwith\s+(?:a|an|the)?\b|\bthat\s+(?:has|have|is|are)\b)",
     re.I,
 )
 _MIN_CH_RE = re.compile(
@@ -220,31 +243,51 @@ def parse_natural_language_query(query: str, allow_llm: bool = True) -> ParsedQu
     parsed = ParsedQuery(raw_query=raw)
     parsed.required_metadata_domains, parsed.preferred_reading_domains = _extract_domains_and_roles(raw)
 
-    # 1. Extract negated clauses FIRST so "no harem" or "not ongoing" never triggers positive match!
-    negated_spans: list[tuple[int, int]] = []
+    # 1. Extract negated / disliked clauses FIRST (supporting multi-genre lists like
+    # "I don't like harem, smut, or yaoi" without swallowing unrelated constraints like chapter counts!)
+    masked_chars = list(raw)
     for m in _NEGATION_CLAUSE_RE.finditer(raw):
-        phrase = m.group(1).strip().lower()
-        negated_spans.append(m.span())
-        if "ongoing" in phrase or "incomplete" in phrase or "hiatus" in phrase:
-            parsed.completion_status = "completed"
-        if "completed" in phrase or "finished" in phrase:
-            parsed.completion_status = "ongoing"
+        trig_start, trig_end = m.span(1)
+        phrase_start, phrase_end = m.span(2)
+        phrase = m.group(2)
+        phrase_low = phrase.lower()
 
-        for pat, g_canon, _ in GENRE_PATTERNS:
-            if pat.search(phrase) and g_canon not in parsed.excluded_genres:
-                parsed.excluded_genres.append(g_canon)
-                # 'harem' / 'smut' / 'tragedy' can appear in tags too
+        # Blank the negation trigger word(s)
+        for i in range(trig_start, trig_end):
+            masked_chars[i] = " "
+
+        for st_m in re.finditer(r"\b(?:ongoing|incomplete|hiatus)\b", phrase_low):
+            parsed.completion_status = "completed"
+            for i in range(phrase_start + st_m.start(), phrase_start + st_m.end()):
+                masked_chars[i] = " "
+        for st_m in re.finditer(r"\b(?:completed|finished)\b", phrase_low):
+            parsed.completion_status = "ongoing"
+            for i in range(phrase_start + st_m.start(), phrase_start + st_m.end()):
+                masked_chars[i] = " "
+
+        for pat, g_canon, soft_gs in GENRE_PATTERNS:
+            for gm in pat.finditer(phrase):
+                if g_canon not in parsed.excluded_genres:
+                    parsed.excluded_genres.append(g_canon)
                 if g_canon not in parsed.excluded_tags:
                     parsed.excluded_tags.append(g_canon)
-        for pat, t_canon, _ in TAG_PATTERNS:
-            if pat.search(phrase) and t_canon not in parsed.excluded_tags:
-                parsed.excluded_tags.append(t_canon)
+                # For closely coupled romance-orientation aliases (e.g. yaoi <-> shounen ai), exclude synonym too
+                if g_canon in {"yaoi", "yuri"}:
+                    for sg in soft_gs:
+                        if sg not in parsed.excluded_genres:
+                            parsed.excluded_genres.append(sg)
+                        if sg not in parsed.excluded_tags:
+                            parsed.excluded_tags.append(sg)
+                for i in range(phrase_start + gm.start(), phrase_start + gm.end()):
+                    masked_chars[i] = " "
 
-    # Mask out negated spans & URLs for positive extraction
-    masked_chars = list(raw)
-    for s, e in negated_spans:
-        for i in range(s, e):
-            masked_chars[i] = " "
+        for pat, t_canon, _ in TAG_PATTERNS:
+            for tm in pat.finditer(phrase):
+                if t_canon not in parsed.excluded_tags:
+                    parsed.excluded_tags.append(t_canon)
+                for i in range(phrase_start + tm.start(), phrase_start + tm.end()):
+                    masked_chars[i] = " "
+
     positive_text = "".join(masked_chars)
     positive_no_urls = _URL_RE.sub(" ", positive_text)
 
@@ -312,16 +355,17 @@ def parse_natural_language_query(query: str, allow_llm: bool = True) -> ParsedQu
         if cand and cand.lower() not in {"my history", "my past reads", "my physical books"}:
             parsed.similar_to_titles.append(cand)
 
-    # 8. Clean semantic query (strip URLs, domain boilerplate, meta instructions)
-    sem = _URL_RE.sub(" ", raw)
-    sem = _BARE_DOMAIN_RE.sub(" ", sem)
+    # 8. Clean semantic query using positive_no_urls so disliked genre/trope words don't attract dense vectors!
+    sem = _BARE_DOMAIN_RE.sub(" ", positive_no_urls)
     sem = re.sub(
         r"\b(?:find\s+me|give\s+me|recommend(?:\s+me)?|i\s+want\s+to\s+read(?:\s+the\s+novel)?\s+on|"
-        r"also\s+have\s+an\s+entry\s+on|have\s+an\s+entry\s+on|the\s+novel\s+should\s+be|etc\.?)\b",
+        r"also\s+have\s+an\s+entry\s+on|have\s+an\s+entry\s+on|the\s+novel\s+should\s+be|"
+        r"genres?\s+(?:i\s+)?(?:like|love|prefer|dislike|hate)|i\s+(?:really\s+)?(?:like|love|prefer|enjoy)|etc\.?)\b",
         " ",
         sem,
         flags=re.I,
     )
+    sem = re.sub(r"[,;]+", " ", sem)
     sem = clean_text(sem)
     parsed.semantic_query = sem or raw
 

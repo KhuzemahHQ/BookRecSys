@@ -40,3 +40,17 @@ def test_print_book_espionage_query() -> None:
     assert "thriller" in parsed.required_genres
     assert "espionage" in parsed.required_tags
     assert "Alex Rider" in parsed.similar_to_titles
+
+
+def test_conversational_liked_and_disliked_genres_lists() -> None:
+    q = (
+        "I like xianxia, action, and mystery, and I don't like harem, smut, or yaoi. "
+        "I also dislike tragedy and gender bender, but I love a scheming main character."
+    )
+    parsed = parse_natural_language_query(q, allow_llm=False)
+    assert set(parsed.required_genres) >= {"xianxia", "action", "mystery"}
+    assert "scheming" in parsed.required_tags
+    for bad in ("harem", "smut", "yaoi", "shounen ai", "tragedy", "gender bender"):
+        assert bad in parsed.excluded_genres or bad in parsed.excluded_tags
+        assert bad not in parsed.required_genres
+        assert bad not in parsed.semantic_query.lower()
