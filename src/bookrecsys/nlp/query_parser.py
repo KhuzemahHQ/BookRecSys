@@ -288,6 +288,11 @@ def parse_natural_language_query(query: str, allow_llm: bool = True) -> ParsedQu
                 for i in range(phrase_start + tm.start(), phrase_start + tm.end()):
                     masked_chars[i] = " "
 
+        # If any genre/tag/status was negated in this clause, also blank leftover 'or'/'nor' connectors in it
+        for conn_m in re.finditer(r"\b(?:or|nor)\b", phrase_low):
+            for i in range(phrase_start + conn_m.start(), phrase_start + conn_m.end()):
+                masked_chars[i] = " "
+
     positive_text = "".join(masked_chars)
     positive_no_urls = _URL_RE.sub(" ", positive_text)
 

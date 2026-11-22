@@ -97,13 +97,12 @@ class BookRecommender:
 
         # Hard requirement on completion status whenever explicitly mentioned in the query
         if parsed.completion_status == "completed":
-            if parsed.require_complete_translation:
-                base_mask &= idx.trans_completed
-            else:
-                base_mask &= idx.completed_true
-                # Exclude novels explicitly marked as having an incomplete translation
-                if int(np.sum(base_mask & ~idx.trans_incomplete)) >= max(top_k, 5):
-                    base_mask &= ~idx.trans_incomplete
+            base_mask &= idx.completed_true
+            # Only pre-exclude NovelUpdates `complete_translated == False` when NOT verifying live on a reading site
+            # (since NovelPhoenix often hosts full completed translations even when NU fan-group status says False!)
+            if parsed.require_complete_translation and not (verify_online and parsed.preferred_reading_domains):
+                if int(np.sum(base_mask & idx.trans_likely_complete)) >= max(top_k, 5):
+                    base_mask &= idx.trans_likely_complete
         elif parsed.completion_status == "ongoing":
             base_mask &= idx.completed_false
 
@@ -125,40 +124,54 @@ class BookRecommender:
             if np.sum(base_mask & ch_ok) >= 5:
                 base_mask &= ch_ok
 
-        # 2. Progressive genre/tag constraint tiers (while NEVER relaxing base_mask / completion_status!)
+        # 2. Progressive genre/tag constraint tiers (preserving base_mask: unread + exclusions + completion!)
+        # Include close taxonomy synonyms (e.g. xianxia <-> xuanhuan, transmigration <-> transported to another world / reincarnation)
+        # in an expanded tier so NovelUpdates taxonomy splits don't starve valid results, while scoring exact matches higher!
         strict_mask = base_mask.copy()
 
-        genre_strict = strict_mask.copy()
+        genre_exact = strict_mask.copy()
         for g in parsed.required_genres:
-            g_m = idx.genre_mask(g)
-            # Also check tag_mask in case Goodreads/RoyalRoad stores genre in tags
-            g_m |= idx.tag_mask(g)
-            genre_strict &= g_m
+            genre_exact &= idx.genre_mask(g) | idx.tag_mask(g)
 
-        full_strict = genre_strict.copy()
+        genre_synonym = strict_mask.copy()
+        if parsed.required_genres:
+            any_g = np.zeros(n_docs, dtype=bool)
+            for g in parsed.required_genres + parsed.soft_genres[:2]:
+                any_g |= idx.genre_mask(g) | idx.tag_mask(g)
+            genre_synonym &= any_g
+
+        full_strict = genre_exact.copy()
         for tg in parsed.required_tags:
             full_strict &= idx.tag_mask(tg)
 
-        # Select candidate pool (aim for at least 40 candidates when reading platform check is needed)
-        min_pool = max(top_k * 5, 40) if parsed.preferred_reading_domains else max(top_k * 3, 20)
-        if int(np.sum(full_strict)) >= min(min_pool, max(top_k, 8)):
+        synonym_strict = genre_synonym.copy()
+        if parsed.required_tags:
+            any_t = np.zeros(n_docs, dtype=bool)
+            for tg in parsed.required_tags + parsed.soft_tags[:2]:
+                any_t |= idx.tag_mask(tg)
+            synonym_strict &= any_t
+
+        # Aim for a healthy pool (~120+ when verifying external reading site availability, ~30+ offline)
+        min_pool = max(top_k * 20, 120) if (verify_online and parsed.preferred_reading_domains) else max(top_k * 4, 24)
+        if int(np.sum(full_strict)) >= min_pool:
             active_mask = full_strict
-        elif int(np.sum(genre_strict)) >= max(top_k, 8):
-            active_mask = genre_strict
-        elif int(np.sum(strict_mask)) >= max(top_k, 8):
-            active_mask = strict_mask
+        elif int(np.sum(synonym_strict)) >= max(top_k * 4, 20):
+            active_mask = synonym_strict
+        elif int(np.sum(genre_synonym)) >= max(top_k * 2, 10):
+            active_mask = genre_synonym
         else:
-            active_mask = base_mask
+            active_mask = strict_mask
 
         candidate_indices = np.flatnonzero(active_mask)
         if len(candidate_indices) == 0:
             candidate_indices = np.flatnonzero(base_mask)
 
-        # 3. Compute exact + partial genre/tag constraint match bonus for every candidate in active_mask
+        # 3. Compute exact + synonym genre/tag constraint match bonus for every candidate in active_mask
         n_cand = len(candidate_indices)
         constraint_bonus = np.zeros(n_cand, dtype=np.float32)
         if parsed.required_genres or parsed.required_tags or parsed.completion_status:
             is_full = full_strict[candidate_indices].astype(np.float32)
+            is_syn = synonym_strict[candidate_indices].astype(np.float32)
             if parsed.required_genres:
                 g_frac = np.zeros(n_cand, dtype=np.float32)
                 for g in parsed.required_genres:
@@ -166,20 +179,20 @@ class BookRecommender:
                     g_frac += g_m.astype(np.float32)
                 g_frac /= float(len(parsed.required_genres))
             else:
-                g_frac = genre_strict[candidate_indices].astype(np.float32)
-            constraint_bonus = 0.55 * is_full + 0.45 * g_frac
+                g_frac = genre_exact[candidate_indices].astype(np.float32)
+            constraint_bonus = 0.45 * is_full + 0.30 * is_syn + 0.25 * g_frac
 
-            # Prioritize entries explicitly marked completely translated when completed status is requested
+            # Prioritize entries marked completely translated when completed status is requested
             if parsed.completion_status == "completed":
-                constraint_bonus += idx.trans_completed[candidate_indices].astype(np.float32) * 0.18
+                constraint_bonus += idx.trans_likely_complete[candidate_indices].astype(np.float32) * 0.15
 
             # Soft genre/tag bonus
             soft_hits = np.zeros(n_cand, dtype=np.float32)
             for sg in parsed.soft_genres:
-                soft_hits += idx.genre_mask(sg)[candidate_indices].astype(np.float32) * 0.15
+                soft_hits += idx.genre_mask(sg)[candidate_indices].astype(np.float32) * 0.10
             for st in parsed.soft_tags:
-                soft_hits += idx.tag_mask(st)[candidate_indices].astype(np.float32) * 0.20
-            constraint_bonus = np.clip(constraint_bonus + np.minimum(0.25, soft_hits), 0.0, 1.0)
+                soft_hits += idx.tag_mask(st)[candidate_indices].astype(np.float32) * 0.12
+            constraint_bonus = np.clip(constraint_bonus + np.minimum(0.20, soft_hits), 0.0, 1.0)
 
         # 4. Query semantic & lexical scores (if query given or seed titles given)
         has_query = bool(parsed.raw_query.strip())
@@ -289,6 +302,7 @@ class BookRecommender:
             )
 
         results: list[RecommendationResult] = []
+        relaxed_platform_pool: list[RecommendationResult] = []
         for pos, row_id, base_score in shortlisted:
             rec = idx.records[row_id]
             bid = rec["book_id"]
@@ -339,7 +353,7 @@ class BookRecommender:
                         verified_on_preferred = True
                         if np_lnk.is_completed_online is not None:
                             is_comp = np_lnk.is_completed_online
-                        platform_bonus += 0.18 if np_lnk.is_completed_online is True else 0.12
+                        platform_bonus += 0.18 if np_lnk.is_completed_online is True else 0.08
                         if np_lnk.extra_synopsis:
                             desc = np_lnk.extra_synopsis
                         if np_lnk.chapters_online:
@@ -354,18 +368,10 @@ class BookRecommender:
                             verified_on_preferred = True
                             platform_bonus += 0.12
 
-            # Hard enforcement of completion status (including live reading-platform status!)
+            # Hard enforcement of completion status
             if parsed.completion_status == "completed" and is_comp is not True:
                 continue
             if parsed.completion_status == "ongoing" and is_comp is not False:
-                continue
-
-            if (
-                strict_reading_platform
-                and verify_online
-                and parsed.preferred_reading_domains
-                and not verified_on_preferred
-            ):
                 continue
 
             # Enrich missing NovelUpdates synopses from NovelPhoenix on top candidates even when not explicitly requested!
@@ -379,7 +385,6 @@ class BookRecommender:
                 opt_np = self.verifier.verify_novelphoenix(rec["title"], rec.get("aliases") or [], fetch_synopsis=True)
                 if opt_np:
                     if opt_np.is_completed_online is not None and parsed.completion_status == "completed" and not opt_np.is_completed_online:
-                        # Skip if live verification reveals translation is still ongoing when completed was requested
                         continue
                     if opt_np.extra_synopsis:
                         desc = opt_np.extra_synopsis
@@ -394,31 +399,51 @@ class BookRecommender:
                 "quality": round(float(quality_scores[pos]), 3),
             }
             reasons = self._build_explanations(rec, row_id, parsed, fav_match_map, links, is_comp, ch_str)
-
-            results.append(
-                RecommendationResult(
-                    book_id=bid,
-                    title=rec["title"],
-                    authors=rec.get("authors") or [],
-                    media_type=rec.get("media_type") or "book",
-                    media_category=rec.get("media_category") or "unknown",
-                    source=rec.get("source") or "catalog",
-                    original_language=rec.get("original_language") or "",
-                    genres=rec.get("genres") or [],
-                    tags=rec.get("tags") or [],
-                    description=desc,
-                    is_completed=is_comp,
-                    chapters_or_pages=ch_str,
-                    public_rating=round(float(rec["rating"]), 2) if rec.get("rating") else None,
-                    rating_votes=int(rec["rating_votes"]) if rec.get("rating_votes") else None,
-                    final_score=final_sc,
-                    score_breakdown=breakdown,
-                    why_recommended=reasons,
-                    links=links,
-                )
+            cand_obj = RecommendationResult(
+                book_id=bid,
+                title=rec["title"],
+                authors=rec.get("authors") or [],
+                media_type=rec.get("media_type") or "book",
+                media_category=rec.get("media_category") or "unknown",
+                source=rec.get("source") or "catalog",
+                original_language=rec.get("original_language") or "",
+                genres=rec.get("genres") or [],
+                tags=rec.get("tags") or [],
+                description=desc,
+                is_completed=is_comp,
+                chapters_or_pages=ch_str,
+                public_rating=round(float(rec["rating"]), 2) if rec.get("rating") else None,
+                rating_votes=int(rec["rating_votes"]) if rec.get("rating_votes") else None,
+                final_score=final_sc,
+                score_breakdown=breakdown,
+                why_recommended=reasons,
+                links=links,
             )
+
+            if (
+                strict_reading_platform
+                and verify_online
+                and parsed.preferred_reading_domains
+                and not verified_on_preferred
+            ):
+                # Hold as graceful fallback ONLY if strict reading-site verification yields < top_k results
+                cand_obj.final_score = round(cand_obj.final_score * 0.82, 4)
+                cand_obj.why_recommended.append(
+                    f"Completed in catalog (not yet verified on {', '.join(parsed.preferred_reading_domains)})"
+                )
+                relaxed_platform_pool.append(cand_obj)
+                continue
+
+            results.append(cand_obj)
             if len(results) >= top_k:
                 break
+
+        # Graceful fallback: if strict reading-site pool had fewer than top_k, backfill from completed catalog matches
+        if len(results) < top_k and relaxed_platform_pool:
+            for extra_cand in relaxed_platform_pool:
+                results.append(extra_cand)
+                if len(results) >= top_k:
+                    break
 
         # 8. Online Discovery Fallback if strict filtering yielded fewer than top_k results
         if verify_online and len(results) < top_k:

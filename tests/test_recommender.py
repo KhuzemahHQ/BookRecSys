@@ -216,12 +216,21 @@ def test_recommender_excludes_read_items_and_ranks_matching_constraints(tmp_path
     assert recs[0].title == "Steady Daoist Transmigrator"
     assert any("novelupdates.com" in lnk.url for lnk in recs[0].links)
 
-    # Even for a rare genre/trope where strict genre relaxation triggers, ongoing items must NEVER leak into completed queries
-    _, recs_rare = engine.recommend(
-        "find me a completed mecha xianxia web novel",
-        top_k=5,
+    # Verify NovelUpdates 'complete_translated: None' (empty string in NU CSV) works with 'fully translated'
+    raw_items[1]["complete_translated"] = None
+    pq.write_table(pa.Table.from_pylist(raw_items), cat_path)
+    idx2 = HybridSearchIndex(
+        catalog_path=cat_path,
+        embeddings_path=emb_path,
+        lexical_path=lex_path,
+        embedder=dummy_emb,  # type: ignore[arg-type]
+    )
+    engine2 = BookRecommender(index=idx2, cache=OnlineCache(db_path=cache_path))
+    _, recs_ft = engine2.recommend(
+        "find me a xianxia light novel that has a transmigrated main character. The novel should be completed and fully translated. No yaoi or smut",
+        top_k=3,
         verify_online=False,
         allow_llm_parser=False,
     )
-    assert all(r.is_completed is True for r in recs_rare)
-    assert "Ongoing Xianxia Story" not in [r.title for r in recs_rare]
+    assert len(recs_ft) >= 1
+    assert all(r.is_completed is True for r in recs_ft)

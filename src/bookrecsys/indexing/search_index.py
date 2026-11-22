@@ -243,6 +243,8 @@ class HybridSearchIndex:
         self.trans_incomplete = np.array(
             [r.get("complete_translated") is False for r in self.records], dtype=bool
         )
+        # Note: NovelUpdates dataset records 'False' for incomplete translations and '' (None) when complete!
+        self.trans_likely_complete = self.completed_true & ~self.trans_incomplete
         self.chapter_counts = np.array(
             [int(r.get("chapter_count") or -1) for r in self.records], dtype=np.int32
         )
